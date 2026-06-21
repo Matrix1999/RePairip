@@ -5,36 +5,63 @@
 <h1 align="center">RePairip</h1>
 
 <p align="center">
-  RePairip is a Google加固 reverse engineering tool that can dump all VMRunner snapshots and fully repack Android applications, removing protection layers completely
+  Universal Pairip protection remover. Works on all apps using any Pairip SDK version.
 </p>
 
-<p align="center">
-  <b>Current version:</b> 1.4.14 &nbsp;|&nbsp;
-  <b>Language:</b> Java 17 &nbsp;|&nbsp;
-  <b>Build:</b> Gradle + Shadow Jar
-</p>
+---
 
+## ⚡ Termux — No building needed
 
-## Tutorial
+```bash
+# 1. One-time setup
+termux-setup-storage
+pkg install wget openjdk-17 -y
 
-[Watch Video on RevDex.Re](https://revdex.re/input.mp4)
+# 2. Download the pre-built JAR
+wget https://github.com/Matrix1999/RePairip/releases/download/v1.0/RePairip.jar
 
+# 3. Run it
+java -jar RePairip.jar -i /sdcard/Download/yourapp.apks
+```
 
-[Watch Video on Telegram](https://t.me/RevDex/557)
+Patched APK → `/sdcard/RePairip/`
+Full log → `/sdcard/RePairip/logs/`
 
-| App UI | Dump Style |
-| --- | --- |
-| ![App UI](preview/a1.jpg) | ![Dump Style](preview/a2.jpg) |
+---
 
+## 🔧 Termux — Clone & Build
+
+```bash
+termux-setup-storage
+pkg install git openjdk-17 -y
+
+git clone https://github.com/Matrix1999/RePairip.git
+cd RePairip
+chmod +x gradlew
+./gradlew :Matrix:shadowJar
+
+java -jar Matrix/build/libs/RePairip.jar -i /sdcard/Download/yourapp.apks
+```
+
+---
+
+## Options
+
+| Flag | Description |
+|------|-------------|
+| `-i <file>` | Input `.apk` or `.apks` file (required) |
+| `-t <file>` | Translation JSON file (optional) |
+| `--no-log` | Disable sdcard log file (ON by default) |
+
+---
+
+## What it patches
+
+- All `com.pairip.*` license/signature check classes (universal, not just 3 hardcoded)
+- `verifySignatureMatches`, `verifyIntegrity`, `checkLicense`, `validateSignature`, `checkSignature`, `isValid`, `isLicensed`, `verify`, `check` and more
+
+---
 
 ## License
 
-This project is distributed under the Apache License 2.0.
-
-```text
-Apache License
-Version 2.0, January 2004
-https://www.apache.org/licenses/
-```
-
-Copyright (C) 2026 HighCapable
+Apache License 2.0 — Copyright (C) 2026
