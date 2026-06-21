@@ -14,87 +14,80 @@ import java.util.List;
 public class manifestP {
 
     public static void patch(ApkModule m) {
-
         AndroidManifestBlock mf = m.getAndroidManifest();
+        if (mf == null) return;
 
-        if (mf == null) {
-            return;
-        }
-
+        // Fix split APK flags so merged APK installs cleanly
         Boolean extractNativeLibs = mf.isExtractNativeLibs();
         if (extractNativeLibs != null && !extractNativeLibs) {
             mf.setExtractNativeLibs(true);
         }
 
-        ResXmlElement M_Element = mf.getManifestElement();
-
-        if (M_Element != null) {
-
-            M_Element.removeAttributesWithId(AndroidManifest.ID_requiredSplitTypes);
-            M_Element.removeAttributesWithId(AndroidManifest.ID_splitTypes);
-            M_Element.removeAttributesWithId(AndroidManifest.ID_isSplitRequired);
-            M_Element.removeAttributesWithId(AndroidManifest.ID_isFeatureSplit);
-
-            M_Element.removeAttributesWithName("requiredSplitTypes");
-            M_Element.removeAttributesWithName("splitTypes");
-            M_Element.removeAttributesWithName("isSplitRequired");
-            M_Element.removeAttributesWithName("isFeatureSplit");
-            M_Element.removeAttributesWithName("split");
+        ResXmlElement manifestEl = mf.getManifestElement();
+        if (manifestEl != null) {
+            manifestEl.removeAttributesWithId(AndroidManifest.ID_requiredSplitTypes);
+            manifestEl.removeAttributesWithId(AndroidManifest.ID_splitTypes);
+            manifestEl.removeAttributesWithId(AndroidManifest.ID_isSplitRequired);
+            manifestEl.removeAttributesWithId(AndroidManifest.ID_isFeatureSplit);
+            manifestEl.removeAttributesWithName("requiredSplitTypes");
+            manifestEl.removeAttributesWithName("splitTypes");
+            manifestEl.removeAttributesWithName("isSplitRequired");
+            manifestEl.removeAttributesWithName("isFeatureSplit");
+            manifestEl.removeAttributesWithName("split");
         }
 
-        List<String> metaDataToRemove = Arrays.asList(
+        // Remove Play Store stamp meta-data
+        RElementsByName(mf, "meta-data", Arrays.asList(
                 "com.android.stamp.source",
                 "com.android.stamp.type",
                 "com.android.vending.splits",
                 "com.android.vending.derived.apk.id",
                 "com.android.dynamic.apk.fused.modules",
                 "com.android.vending.splits.required"
-        );
+        ));
 
-        List<String> activitiesToRemove = Collections.singletonList(
-                "com.pairip.licensecheck.LicenseActivity"
-        );
+        // Remove ALL com.pairip.* components universally across all SDK versions
+        // (licensecheck, licensecheck2, licensecheck3, licensecheck4 …)
+        removePairipComponents(mf, "activity");
+        removePairipComponents(mf, "provider");
+        removePairipComponents(mf, "service");
+        removePairipComponents(mf, "receiver");
 
-        List<String> providersToRemove = Collections.singletonList(
-                "com.pairip.licensecheck.LicenseContentProvider"
-        );
-
-        List<String> permissionsToRemove = Collections.singletonList(
+        // Remove CHECK_LICENSE permission
+        RElementsByName(mf, "uses-permission", Collections.singletonList(
                 "com.android.vending.CHECK_LICENSE"
-        );
-
-        RElementsByName(mf, "meta-data", metaDataToRemove);
-
-        RElementsByName(mf, "activity", activitiesToRemove);
-
-        RElementsByName(mf, "provider", providersToRemove);
-
-        RElementsByName(mf, "uses-permission", permissionsToRemove);
+        ));
 
         m.setManifest(mf);
     }
 
-    private static void RElementsByName(AndroidManifestBlock mf, String tag, List<String> namesToRemove) {
-
-        Iterator<ResXmlElement> Y_rator;
-
-        if ("uses-permission".equals(tag)) {
-            Y_rator = mf.getManifestElement().getElements(tag);
-        } else {
-            Y_rator = mf.getApplicationElementsByTag(tag);
-        }
-        List<ResXmlElement> elementsToRemove = new ArrayList<>();
-
-        while (Y_rator.hasNext()) {
-            ResXmlElement element = Y_rator.next();
-            String name = AndroidManifestBlock.getAndroidNameValue(element);
-            if (namesToRemove.contains(name)) {
-                elementsToRemove.add(element);
+    // Removes every manifest component whose android:name starts with com.pairip.
+    private static void removePairipComponents(AndroidManifestBlock mf, String tag) {
+        Iterator<ResXmlElement> it = mf.getApplicationElementsByTag(tag);
+        List<ResXmlElement> toRemove = new ArrayList<>();
+        while (it.hasNext()) {
+            ResXmlElement el = it.next();
+            String name = AndroidManifestBlock.getAndroidNameValue(el);
+            if (name != null && name.startsWith("com.pairip.")) {
+                toRemove.add(el);
             }
         }
-
-        for (ResXmlElement element : elementsToRemove) {
-            element.removeSelf();
+        for (ResXmlElement el : toRemove) el.removeSelf();
+        if (!toRemove.isEmpty()) {
+            System.out.println("[Manifest] Removed " + toRemove.size() + " pairip <" + tag + "> entries");
         }
+    }
+
+    private static void RElementsByName(AndroidManifestBlock mf, String tag, List<String> names) {
+        Iterator<ResXmlElement> it = "uses-permission".equals(tag)
+                ? mf.getManifestElement().getElements(tag)
+                : mf.getApplicationElementsByTag(tag);
+        List<ResXmlElement> toRemove = new ArrayList<>();
+        while (it.hasNext()) {
+            ResXmlElement el = it.next();
+            String name = AndroidManifestBlock.getAndroidNameValue(el);
+            if (names.contains(name)) toRemove.add(el);
+        }
+        for (ResXmlElement el : toRemove) el.removeSelf();
     }
 }

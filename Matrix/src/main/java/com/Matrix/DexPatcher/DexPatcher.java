@@ -9,11 +9,17 @@ import com.reandroid.apk.ApkModule;
 import com.reandroid.archive.ByteInputSource;
 import com.reandroid.archive.InputSource;
 import org.jf.dexlib2.DexFileFactory;
+import org.jf.dexlib2.Opcode;
 import org.jf.dexlib2.Opcodes;
 import org.jf.dexlib2.iface.ClassDef;
 import org.jf.dexlib2.iface.DexFile;
 import org.jf.dexlib2.iface.Method;
 import org.jf.dexlib2.immutable.ImmutableClassDef;
+import org.jf.dexlib2.immutable.ImmutableMethod;
+import org.jf.dexlib2.immutable.ImmutableMethodImplementation;
+import org.jf.dexlib2.immutable.instruction.ImmutableInstruction10x;
+import org.jf.dexlib2.immutable.instruction.ImmutableInstruction11n;
+import org.jf.dexlib2.immutable.instruction.ImmutableInstruction11x;
 import org.jf.dexlib2.writer.io.MemoryDataStore;
 import org.jf.dexlib2.writer.pool.DexPool;
 
@@ -25,51 +31,131 @@ import java.util.*;
 
 public class DexPatcher {
 
-    // Universal: matches ALL pairip license/check class variants across all SDK versions
+    // ─── Universal check-class matcher ───────────────────────────────────────
+    // Matches ALL Pairip license / signature / auth check classes across every
+    // SDK version (licensecheck, licensecheck2, licensecheck3, licensecheck4 …)
     private static boolean isPairipCheckClass(String type) {
         if (type == null) return false;
-        // Exact known classes
-        if ("Lcom/pairip/SignatureCheck;".equals(type)) return true;
-        // Any licensecheck variant: licensecheck, licensecheck2, licensecheck3, licensecheck4 ...
-        if (type.startsWith("Lcom/pairip/licensecheck") && type.contains("/LicenseClient")) return true;
-        // Any other pairip check/verify utility class
-        if (type.startsWith("Lcom/pairip/") && (
-                type.contains("Check") ||
-                type.contains("License") ||
-                type.contains("Verify") ||
-                type.contains("Integrity") ||
-                type.contains("Signature") ||
-                type.contains("Auth")
-        )) return true;
-        return false;
+        if (!type.startsWith("Lcom/pairip/")) return false;
+        // Never touch the core runtime classes — we handle those separately
+        if ("Lcom/pairip/VMRunner;".equals(type))                    return false;
+        if ("Lcom/pairip/StartupLauncher;".equals(type))             return false;
+        if (type.startsWith("Lcom/pairip/application/"))             return false;
+        if ("Lcom/pairip/PairipLog;".equals(type))                   return false;
+        if ("Lcom/pairip/RestoreMethod;".equals(type))               return false;
+        // Everything else under com.pairip is a check/license/verify class
+        return true;
     }
 
+    // ─── Strip ALL Pairip native .so libraries ────────────────────────────────
+    private static void stripNativeLibs(ApkModule m) {
+        List<String> toRemove = new ArrayList<String>();
+        for (InputSource s : m.getInputSources()) {
+            String n = s.getName();
+            if (n.startsWith("lib/") && n.endsWith(".so") && (
+                    n.contains("libpairip") ||
+                    n.contains("libPairip") ||
+                    n.contains("libvmrunner") ||
+                    n.contains("libVmRunner") ||
+                    n.contains("libdexjit")
+            )) {
+                toRemove.add(n);
+            }
+        }
+        for (String name : toRemove) {
+            try {
+                m.getZipEntryMap().remove(name);
+                Logger.log("[DexPatcher] 🗑️  Removed native lib: " + name);
+            } catch (Exception e) {
+                Logger.warn("[DexPatcher] Could not remove " + name + ": " + e.getMessage());
+            }
+        }
+        if (toRemove.isEmpty()) {
+            Logger.log("[DexPatcher] No Pairip native libs found");
+        }
+    }
+
+    // ─── Stub VMRunner.invoke() → return null ─────────────────────────────────
+    // Prevents any late-executed protected code from running at all
+    private static ClassDef stubVMRunner(ClassDef cd) {
+        List<Method> methods = new ArrayList<Method>();
+        for (Method m : cd.getDirectMethods()) methods.add(m);
+        for (Method m : cd.getVirtualMethods()) {
+            if ("invoke".equals(m.getName())) {
+                Logger.log("[DexPatcher] ✅ Stubbing VMRunner.invoke() → null");
+                List<org.jf.dexlib2.iface.instruction.Instruction> ins = Arrays.asList(
+                        new ImmutableInstruction11n(Opcode.CONST_4, 0, 0),
+                        new ImmutableInstruction11x(Opcode.RETURN_OBJECT, 0)
+                );
+                methods.add(new ImmutableMethod(m.getDefiningClass(), m.getName(),
+                        m.getParameters(), m.getReturnType(), m.getAccessFlags(),
+                        m.getAnnotations(), m.getHiddenApiRestrictions(),
+                        new ImmutableMethodImplementation(2, ins, null, null)));
+            } else {
+                methods.add(m);
+            }
+        }
+        return new ImmutableClassDef(cd.getType(), cd.getAccessFlags(),
+                cd.getSuperclass(), cd.getInterfaces(), cd.getSourceFile(),
+                cd.getAnnotations(), cd.getStaticFields(), cd.getInstanceFields(),
+                new ArrayList<Method>(), methods);
+    }
+
+    // ─── Clean Pairip Application class → just call super() ──────────────────
+    // Prevents Pairip from hooking into app startup via Application.<init>
+    private static ClassDef cleanApplication(ClassDef cd) {
+        List<Method> methods = new ArrayList<Method>();
+        for (Method m : cd.getDirectMethods()) {
+            if ("<init>".equals(m.getName())) {
+                Logger.log("[DexPatcher] ✅ Cleaning Application.<init>() → super only");
+                String superclass = cd.getSuperclass() != null ? cd.getSuperclass() : "Ljava/lang/Object;";
+                List<org.jf.dexlib2.iface.instruction.Instruction> ins = Arrays.asList(
+                        new org.jf.dexlib2.immutable.instruction.ImmutableInstruction35c(
+                                Opcode.INVOKE_DIRECT, 1, 0, 0, 0, 0, 0,
+                                new org.jf.dexlib2.immutable.reference.ImmutableMethodReference(
+                                        superclass, "<init>", null, "V")),
+                        new ImmutableInstruction10x(Opcode.RETURN_VOID)
+                );
+                methods.add(new ImmutableMethod(m.getDefiningClass(), "<init>",
+                        m.getParameters(), "V", m.getAccessFlags(),
+                        m.getAnnotations(), m.getHiddenApiRestrictions(),
+                        new ImmutableMethodImplementation(1, ins, null, null)));
+            } else {
+                methods.add(m);
+            }
+        }
+        for (Method m : cd.getVirtualMethods()) methods.add(m);
+        return new ImmutableClassDef(cd.getType(), cd.getAccessFlags(),
+                cd.getSuperclass(), cd.getInterfaces(), cd.getSourceFile(),
+                cd.getAnnotations(), cd.getStaticFields(), cd.getInstanceFields(),
+                methods, new ArrayList<Method>());
+    }
+
+    // ─── Main patch entry point ───────────────────────────────────────────────
     public static void patch(ApkModule m) throws Exception {
+
+        // 1. Remove Pairip native libraries
+        stripNativeLibs(m);
+
         List<String> dx_ns = new ArrayList<String>();
         for (InputSource s : m.getInputSources()) {
-            if (s.getName().endsWith(".dex")) {
-                dx_ns.add(s.getName());
-            }
+            if (s.getName().endsWith(".dex")) dx_ns.add(s.getName());
         }
 
         List<ClassDef> l_cds = new ArrayList<ClassDef>();
-        Set<String> a_ts = new HashSet<String>();
+        Set<String> a_ts    = new HashSet<String>();
         String pkg = "unknown";
-        try {
-            pkg = m.getPackageName();
-        } catch (Exception ignored) {}
+        try { pkg = m.getPackageName(); } catch (Exception ignored) {}
 
-        Logger.log("[DexPatcher] Target package: " + pkg);
-        Logger.log("[DexPatcher] Found " + dx_ns.size() + " dex files: " + dx_ns);
+        Logger.log("[DexPatcher] Target package  : " + pkg);
+        Logger.log("[DexPatcher] Dex files found : " + dx_ns);
 
+        // 2. Load the log.dex (PairipLog) and rewrite its DIR_PATH to sdcard
         try (InputStream i = Main.class.getResourceAsStream("/log.dex")) {
             if (i != null) {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                byte[] buf = new byte[8192];
-                int len;
-                while ((len = i.read(buf)) != -1) {
-                    baos.write(buf, 0, len);
-                }
+                byte[] buf = new byte[8192]; int len;
+                while ((len = i.read(buf)) != -1) baos.write(buf, 0, len);
                 byte[] l_bs = baos.toByteArray();
                 File t_l_dx = File.createTempFile("log", ".dex");
                 Files.write(t_l_dx.toPath(), l_bs);
@@ -82,7 +168,7 @@ public class DexPatcher {
                         for (org.jf.dexlib2.iface.Field f : c.getStaticFields()) {
                             if ("DIR_PATH".equals(f.getName())) {
                                 String n_v = "/sdcard/RePairip/" + pkg;
-                                Logger.log("[DexPatcher] Dump path set to: " + n_v);
+                                Logger.log("[DexPatcher] Dump path → " + n_v);
                                 s_fs.add(new org.jf.dexlib2.immutable.ImmutableField(
                                         f.getDefiningClass(), f.getName(), f.getType(),
                                         f.getAccessFlags(),
@@ -101,13 +187,13 @@ public class DexPatcher {
                     }
                     a_ts.add(c.getType());
                 }
-                Logger.log("[DexPatcher] Loaded log.dex for package: " + pkg);
+                Logger.log("[DexPatcher] log.dex injected for: " + pkg);
             } else {
-                Logger.warn("[DexPatcher] log.dex resource not found — dump logging disabled");
+                Logger.warn("[DexPatcher] log.dex resource not found — dump disabled");
             }
         }
 
-        // Detect junk classes
+        // 3. Detect obfuscated junk classes (string/method containers Pairip uses)
         List<String> j_ts = new ArrayList<String>();
         for (String dn : dx_ns) {
             InputSource s = m.getInputSource(dn);
@@ -115,9 +201,8 @@ public class DexPatcher {
             byte[] d_bs;
             try (InputStream i = s.openStream()) {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                byte[] buf = new byte[8192];
-                int len;
-                while ((len = i.read(buf)) != -1) { baos.write(buf, 0, len); }
+                byte[] buf = new byte[8192]; int len;
+                while ((len = i.read(buf)) != -1) baos.write(buf, 0, len);
                 d_bs = baos.toByteArray();
             }
             File t_dx = File.createTempFile("temp", ".dex");
@@ -130,21 +215,24 @@ public class DexPatcher {
                 if (!cd.getFields().iterator().hasNext()) continue;
                 if (!"Ljava/lang/Object;".equals(cd.getSuperclass())) continue;
                 if (cd.getAccessFlags() != 1) continue;
-                boolean o_t = true;
+                boolean ok = true;
                 for (org.jf.dexlib2.iface.Field f : cd.getFields()) {
-                    if (f.getAccessFlags() != 9) { o_t = false; break; }
+                    if (f.getAccessFlags() != 9) { ok = false; break; }
                     String t = f.getType();
                     if (!t.equals("Ljava/lang/String;") && !t.equals("Ljava/lang/reflect/Method;")) {
-                        o_t = false; break;
+                        ok = false; break;
                     }
-                    if (f.getInitialValue() != null) { o_t = false; break; }
+                    if (f.getInitialValue() != null) { ok = false; break; }
                 }
-                if (o_t) j_ts.add(cd.getType());
+                if (ok) j_ts.add(cd.getType());
             }
         }
-        Logger.log("[DexPatcher] Found " + j_ts.size() + " junk classes to clear");
+        Logger.log("[DexPatcher] Junk classes   : " + j_ts.size());
 
-        boolean foundLauncher = false;
+        // 4. Main patch pass over every dex
+        boolean foundLauncher   = false;
+        boolean foundVMRunner   = false;
+        boolean foundApplication = false;
         int checkClassesPatched = 0;
 
         for (String dn : dx_ns) {
@@ -153,9 +241,8 @@ public class DexPatcher {
             byte[] d_bs;
             try (InputStream i = s.openStream()) {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                byte[] buf = new byte[8192];
-                int len;
-                while ((len = i.read(buf)) != -1) { baos.write(buf, 0, len); }
+                byte[] buf = new byte[8192]; int len;
+                while ((len = i.read(buf)) != -1) baos.write(buf, 0, len);
                 d_bs = baos.toByteArray();
             }
             File t_dx = File.createTempFile("temp", ".dex");
@@ -170,37 +257,40 @@ public class DexPatcher {
                 if (a_ts.contains(cd.getType())) continue;
 
                 if ("Lcom/pairip/StartupLauncher;".equals(cd.getType())) {
-                    mod = true;
-                    foundLauncher = true;
+                    mod = true; foundLauncher = true;
                     Logger.log("[DexPatcher] ✅ Patching StartupLauncher in " + dn);
                     cds.add(patchStartupLauncher(cd, j_ts));
 
+                } else if ("Lcom/pairip/VMRunner;".equals(cd.getType())) {
+                    mod = true; foundVMRunner = true;
+                    cds.add(stubVMRunner(cd));
+
+                } else if (cd.getType().startsWith("Lcom/pairip/application/")) {
+                    mod = true; foundApplication = true;
+                    cds.add(cleanApplication(cd));
+
                 } else if (isPairipCheckClass(cd.getType())) {
-                    mod = true;
-                    checkClassesPatched++;
+                    mod = true; checkClassesPatched++;
                     Logger.log("[DexPatcher] ✅ Bypassing check class: " + cd.getType() + " in " + dn);
                     List<Method> d_ms = new ArrayList<Method>();
-                    for (Method method : cd.getDirectMethods()) {
+                    for (Method method : cd.getDirectMethods())
                         d_ms.add(patchM.patchMethodIfTarget(method));
-                    }
                     List<Method> v_ms = new ArrayList<Method>();
-                    for (Method method : cd.getVirtualMethods()) {
+                    for (Method method : cd.getVirtualMethods())
                         v_ms.add(patchM.patchMethodIfTarget(method));
-                    }
                     cds.add(new ImmutableClassDef(cd.getType(), cd.getAccessFlags(),
                             cd.getSuperclass(), cd.getInterfaces(), cd.getSourceFile(),
                             cd.getAnnotations(), cd.getStaticFields(), cd.getInstanceFields(),
                             d_ms, v_ms));
+
                 } else {
                     cds.add(cd);
                 }
             }
 
-            if (dn.equals("classes.dex")) {
-                if (!l_cds.isEmpty()) {
-                    cds.addAll(l_cds);
-                    mod = true;
-                }
+            if ("classes.dex".equals(dn) && !l_cds.isEmpty()) {
+                cds.addAll(l_cds);
+                mod = true;
             }
 
             if (mod) {
@@ -214,9 +304,14 @@ public class DexPatcher {
             }
         }
 
-        if (!foundLauncher) {
-            Logger.warn("[DexPatcher] ⚠️ StartupLauncher NOT found — app may use a different Pairip version or no Pairip at all");
-        }
-        Logger.log("[DexPatcher] Summary: launcher=" + foundLauncher + ", checkClasses=" + checkClassesPatched);
+        // 5. Summary
+        if (!foundLauncher)    Logger.warn("[DexPatcher] ⚠️  StartupLauncher not found");
+        if (!foundVMRunner)    Logger.warn("[DexPatcher] ⚠️  VMRunner not found");
+        if (!foundApplication) Logger.warn("[DexPatcher] ℹ️  No Pairip Application class found (may be normal)");
+        Logger.log("[DexPatcher] ─── Summary ───────────────────────────");
+        Logger.log("[DexPatcher] StartupLauncher : " + foundLauncher);
+        Logger.log("[DexPatcher] VMRunner stubbed: " + foundVMRunner);
+        Logger.log("[DexPatcher] App cleaned     : " + foundApplication);
+        Logger.log("[DexPatcher] Check classes   : " + checkClassesPatched);
     }
 }

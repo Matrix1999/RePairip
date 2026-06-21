@@ -16,18 +16,7 @@ import java.util.List;
 
 public class patchM {
 
-    // Universal: bypass ALL known check/verify/license method names across all Pairip SDK versions
-    private static final List<String> VOID_BYPASS = Arrays.asList(
-            "verifyIntegrity",
-            "checkLicense",
-            "doCheck",
-            "onCheckComplete",
-            "startCheck",
-            "runCheck",
-            "checkIntegrity",
-            "validateIntegrity"
-    );
-
+    // Methods that return true / 1 (boolean license/verify checks)
     private static final List<String> BOOL_BYPASS = Arrays.asList(
             "verifySignatureMatches",
             "validateSignature",
@@ -36,8 +25,26 @@ public class patchM {
             "isLicensed",
             "isVerified",
             "isAuthenticated",
+            "isAllowed",
+            "isPurchased",
             "verify",
             "check"
+    );
+
+    // Methods that return void / null (license callbacks, activity lifecycle hooks)
+    private static final List<String> VOID_BYPASS = Arrays.asList(
+            "verifyIntegrity",
+            "checkLicense",
+            "doCheck",
+            "onCheckComplete",
+            "onLicenseChecked",
+            "startCheck",
+            "runCheck",
+            "checkIntegrity",
+            "validateIntegrity",
+            "onActivityCreate",    // Pairip re-checks license on Activity.onCreate
+            "onActivityResume",
+            "onActivityStart"
     );
 
     public static Method patchMethodIfTarget(Method m) {
