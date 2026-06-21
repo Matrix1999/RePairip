@@ -35,7 +35,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: RePairip-${{ steps.version.outputs.VERSION }}
-          path: antik/build/libs/RePairip.jar
+          path: Matrix/build/libs/RePairip.jar
           retention-days: 30
 
       - name: Create Release on tag push
